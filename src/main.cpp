@@ -7,7 +7,7 @@ const int D2 = 11;
 const int D3 = 12;
 const int D4 = 13;
 const int keyboardInputDelay = 300;
-int lastKeyboardInput = 0;
+unsigned long lastKeyboardInput = 0;
 
 const byte numRows = 4;
 const byte numCols = 4;
@@ -116,7 +116,6 @@ char readCharacter() {
     for (int row = 0; row < numRows; row++) {
       if (digitalRead(rowPins[row]) == LOW) {
         lastKeyboardInput = millis();
-        //Serial.println(keymap[row][col]);
         digitalWrite(colPins[col], HIGH);
         return keymap[row][col];
       }
@@ -165,12 +164,9 @@ void loop() {
   char inputChar = readCharacter();
   if (inputChar == '\0') return;
   if (input.length() >= rightAnswer.length()) return;
-  Serial.println(String(inputChar));
   if (!characterIsDigit(inputChar)) return;
   int inputDigit = inputChar - '0';
   input += inputChar;
-  Serial.println(String(inputChar));
-  Serial.println(input);
   int index = input.length() - 1;
   if (index >= 4) {
     return;
