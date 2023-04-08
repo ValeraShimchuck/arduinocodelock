@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <EEPROM.h>
+
 
 const int dataPin = 2;
 const int latchPin = 3;
@@ -17,8 +19,22 @@ const byte rowPins[numRows] = {5,6,7,8};
 const byte colPins[numCols] = {9,10,A2,A3};
 const byte analogSuccessPin = A0;
 const byte analogUnsuccessPin = A1;
-const String rightAnswer = "1234";
+const byte analogAdditionalPin = A4;
+String rightAnswer = "1234";
+String adminPin = "0000";
+const char adminButton = 'A';
+const char enterButton = '#';
+const char delete1Digit = 'D';
+const char clearDigits = 'C';
+const char additionalButton = '*';
+const int firstPinByteAddress = 0;
+const int firstAdminPassAddress = 2;
 String input = "";
+bool adminMode = false;
+uint64_t doAutoClear = 0;
+const long autoClearMillis = 10000;
+
+
 int display[4] = {-1,-1,-1,-1};
 
 char keymap[numRows][numCols] = {
@@ -62,6 +78,10 @@ byte shiftedBoolBit(int shift, bool enabled) {
   return (1 << shift);
 }
 
+int getDigitFromChar(char c) {
+  return c - '0';
+}
+
 byte displayBitMask(int digit, bool setFirstDigit) {
   if (digit > 9) {
     Serial.println("not valid number " + digit);
@@ -86,14 +106,40 @@ void writeShift(byte toWrite) {
   digitalWrite(latchPin, HIGH);
 }
 
+void writePinCode(String str, int startAddress) {
+  int digits[4];
+  for (int i = 0; i < 4; i++) {
+    digits[i] = getDigitFromChar(str.charAt(i));
+  }
+  byte firstByte = ((digits[0] & 0xF) << 4) | ((digits[1] & 0xF));
+  byte secondByte = ((digits[2] & 0xF) << 4) | ((digits[3] & 0xF));
+  EEPROM.write(startAddress, firstByte);
+  EEPROM.write(startAddress + 1, secondByte);
+}
+
+String readPinCode(int startAddress) {
+  byte digits[4];
+  byte firstByte = EEPROM.read(startAddress);
+  byte secondByte = EEPROM.read(startAddress + 1);
+  digits[0] = ((firstByte & 0xF0) >> 4);
+  digits[1] = firstByte & 0x0F;
+  digits[2] = ((secondByte & 0xF0) >> 4);
+  digits[3] = secondByte & 0x0F;
+  String str = "";
+  for (int i = 0; i < 4; i++) {
+    int digit = digits[i];
+    if (digit > 9) digit = 9;
+    Serial.println("byte: " + String(digit));
+    str += String(digit);
+  }
+  return str;
+}
+
 void writeDisplay(int digit, int display) {
   bool displayIsFirst = display == 0;
   byte bitMask = displayBitMask(digit, displayIsFirst);
   if (!displayIsFirst) {
     int displayPin = D2 - 1 + display;
-    //for (int i = 1; i < 4; i++) {
-    //  if (display != i) digitalWrite(D2 - 1 + i, LOW);
-    //}
     if ((bitMask & 0b01111111) == 0b01111111) {
       digitalWrite(displayPin, LOW);
       return;
@@ -131,7 +177,10 @@ void setup() {
   for (int row = 0; row < numRows; row++) {
     pinMode(rowPins[row], INPUT_PULLUP);
   }
-
+  rightAnswer = readPinCode(firstPinByteAddress);
+  adminPin = readPinCode(firstAdminPassAddress);
+  Serial.println("pin: " + rightAnswer);
+  Serial.println("admin pin: " + adminPin );
   
   pinMode(colPins[0], OUTPUT);
   pinMode(colPins[1], OUTPUT);
@@ -158,22 +207,162 @@ void updateDisplay() {
   }
 }
 
+void writeUnsuccess(bool b) {
+  writeAnalogBool(analogUnsuccessPin, b);
+}
+
+void writeSuccess(bool b) {
+  writeAnalogBool(analogSuccessPin, b);
+}
+
+void writeAdditional(bool b) {
+  writeAnalogBool(analogAdditionalPin, b);
+}
+
+void clearOutputInfo() {
+  writeUnsuccess(false);
+  writeSuccess(false);
+  doAutoClear = 0;
+}
+
+void runAutoClear() {
+  doAutoClear = millis() + autoClearMillis;
+}
+
+void checkAutoClear() {
+  if (doAutoClear == 0) return;
+  if (doAutoClear > millis()) return;
+  clearOutputInfo();
+}
+
+void writeWithAutoClearSuccess() {
+  writeSuccess(true);
+  runAutoClear();
+}
+
+void writeWithAutoClearUnsuccess() {
+  writeUnsuccess(true);
+  runAutoClear();
+}
+
+void checkPinCode() {
+  Serial.println("check pin code");
+  clearOutputInfo();
+    if (rightAnswer.compareTo(input) == 0) {
+      writeWithAutoClearSuccess();
+    } else writeWithAutoClearUnsuccess();
+}
+
+void updateInput() {
+  for (uint8_t i = 0; i < 4; i++) {
+      int digit;
+      if (input.length() > i) {
+        digit = getDigitFromChar(input.charAt(i));
+      } else digit = -1;
+      display[i] = digit;
+  }
+  updateDisplay();
+}
+
+void delete1DigitFun() {
+  if (input.length() != 0) {
+    input.remove(input.length() - 1);
+    updateInput();
+  }
+}
+
+void clearInputFun() {
+  input = "";
+  updateInput();
+}
+
+void enterFun() {
+  if (adminMode) {
+    clearOutputInfo();
+    if (input.length() != 4) {
+      writeWithAutoClearUnsuccess();
+      return;
+    }
+    writePinCode(input, firstPinByteAddress);
+    rightAnswer = input;
+    writeWithAutoClearSuccess();
+  } else {
+    checkPinCode();
+  }
+  clearInputFun();
+}
+
+void setAdminMode(bool b) {
+  adminMode = b;
+  writeAdditional(b);
+}
+
+void adminModeFun() {
+  clearOutputInfo();
+  if (adminMode) {
+  setAdminMode(false);
+    return;
+  }
+  if (input.compareTo(adminPin) != 0) {
+    writeWithAutoClearUnsuccess();
+    clearInputFun();
+    return;
+  }
+  setAdminMode(true);
+  clearInputFun();
+}
+
+void additionalButtonFun() {
+  if (!adminMode) return;
+  clearOutputInfo();
+  if (input.length() != 4) {
+    writeWithAutoClearUnsuccess();
+    return;
+  }
+  writePinCode(input, firstAdminPassAddress);
+  adminPin = input;
+  writeWithAutoClearSuccess();
+  clearInputFun();
+}
 
 void loop() {
+  checkAutoClear();
   updateDisplay();
   char inputChar = readCharacter();
   if (inputChar == '\0') return;
+  Serial.println("got char: " + String(inputChar));
+  clearOutputInfo();
+  if (!characterIsDigit(inputChar)) {
+    Serial.println("deserialize command");
+    switch (inputChar)
+    {
+    case delete1Digit:
+      delete1DigitFun();
+      break;
+    case clearDigits:
+      clearInputFun();
+      break;
+    case enterButton:
+      enterFun();
+      break;
+    case adminButton:
+      adminModeFun();
+      break;
+    case additionalButton:
+      additionalButtonFun();
+      break;
+    default:
+      break;
+    }
+  } else {
   if (input.length() >= rightAnswer.length()) return;
-  if (!characterIsDigit(inputChar)) return;
-  int inputDigit = inputChar - '0';
-  input += inputChar;
-  int index = input.length() - 1;
-  if (index >= 4) {
-    return;
+    int inputDigit = getDigitFromChar(inputChar);
+    input += inputChar;
+    int index = input.length() - 1;
+    if (index >= 4) {
+      return;
+    }
+    display[index] = inputDigit;
   }
-  display[index] = inputDigit;
-  if (input.length() < rightAnswer.length()) return;
-  if (rightAnswer.compareTo(input) == 0) {
-    writeAnalogBool(analogSuccessPin, true);
-  } else writeAnalogBool(analogUnsuccessPin, true);
+  
 }
